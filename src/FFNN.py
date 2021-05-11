@@ -1,144 +1,165 @@
 import numpy as np
+import math
 
-'''
-Feedforward Neural Network solely based on numpy.
-Uses SGD for training and backpropagation for gradient evaluation.
-Author: Hanbaek Lyu (5/3/2021)
-'''
+class DeepFFNN(object):
+    """
+    Author: Hanbaek Lyu (5/10/2021)
+    Genearal Deep Feedforward Neural Network implementation
+    Input data type: training_data = [pattern1, pattern2, ..., pattern n]
+    Activation: tanh for hidden layer and sigmoid for output layer
 
-class FFNN():
+    pattern i = [np.array (input), np.array (output)]
 
+    TODO: Currently uses square loss. Should be easy to implement other loss functions.
+    """
     def __init__(self,
-                 list_hidden_layer_sizes = [30], # hidden1, hidden2, .. , hidden h
-                 loss_function = 'softmax-cross-entropy', # or 'square' or 'cross-entropy'
-                 activation_list = None, # ['ReLU', 'sigmoid'],
-                 node_states = None,
-                 weight_matrices = None,
-                 training_set = [None, None]): # input = [feature_dim x samples], output [\kappa x samples]
+                 hidden_layer_sizes,  # input and output layer sizes read off from training data
+                 training_data,  # list of patterns [np.array (input), np.array (output)]
+                 activation_list=None): # desired list of activation functions in each layer.
 
-        self.training_set = training_set
-        # self.test_set = test_set
-        self.list_layer_sizes = [self.training_set[0].shape[0]] + list_hidden_layer_sizes + [self.training_set[1].shape[0]]
-        self.loss_function = loss_function
-        self.n_layers = len(self.list_layer_sizes)-1
+        # initialize training data and layer info
+        self.training_data = training_data
         self.activation_list = activation_list
-        self.node_states = node_states
-        self.weight_matrices = weight_matrices
+        self.list_layer_sizes = [len(self.training_data[0][0]) + 1] + hidden_layer_sizes + [len(self.training_data[0][1])]
+        # add hidden unit in the input layer. No hidden units for the hidden layers.
+        self.n_layers = len(self.list_layer_sizes)-1
 
         self.initialize()
 
-
     def initialize(self):
+
+        # list of activation functions
         if self.activation_list is None:
-            activation_list = ['ReLU' for i in np.arange(len(self.list_layer_sizes)-1)]
+            activation_list = ['tanh' for i in np.arange(len(self.list_layer_sizes))]
+            activation_list[0] = 'identity'  # dummy activation for the input layer
             activation_list[-1] = 'sigmoid'
             self.activation_list = activation_list
 
-        if self.node_states == None:
-            node_states = []
-            for i in np.arange(len(self.list_layer_sizes)):
-                node_states.append(np.zeros(shape=[self.list_layer_sizes[i], ]))
-            self.node_states = node_states
+        # default activation of nodes
+        node_states = []
+        for i in np.arange(len(self.list_layer_sizes)):
+            node_states.append(np.zeros(shape=[self.list_layer_sizes[i], ]))
+        self.node_states = node_states
 
-        if self.weight_matrices == None:
-            weight_matrices = []
-            for i in np.arange(len(self.activation_list)):
-                U = np.random.rand(self.list_layer_sizes[i], self.list_layer_sizes[i+1])
-                weight_matrices.append(1-2*U)
-            self.weight_matrices = weight_matrices
+        # initial weight matrices
+        # use scheme from 'efficient backprop to initialize weights'
+        weight_matrices = []
+        for i in np.arange(self.n_layers):
+            weight_range = 1/(self.list_layer_sizes[i]**(0.5))
+            U = np.random.normal(loc = 0, scale = weight_range, size = (self.list_layer_sizes[i], self.list_layer_sizes[i+1]))
+            weight_matrices.append(U)
+            print('weight_matrix.shape', U.shape)
+        self.weight_matrices = weight_matrices
 
+        # create arrays of 0's to store previous gradients for momentum term in SGD update
+        prev_grad_list = []
+        for i in np.arange(self.n_layers):
+            V = np.zeros((self.list_layer_sizes[i], self.list_layer_sizes[i+1]))
+            prev_grad_list.append(V)
+        self.prev_grad_list = prev_grad_list
 
-    def forward_propagate(self, input_data):
+    def forwardPropagate(self, inputs):
         # Forward propagate the input using the current weights and update node states
-        self.node_states[0] = input_data
+        self.node_states[0][:-1] = inputs # avoid last coordinate for hidden unit
         for i in np.arange(self.n_layers):
             X_new = self.node_states[i].T @ self.weight_matrices[i]
-            X_new = activation(X_new, type=self.activation_list[i])
+            X_new = activation(X_new, type=self.activation_list[i+1])
             self.node_states[i+1] = X_new
-            # print('!!! X_new', X_new)
 
-    def backpropagate(self, output_data):
-        # Backpropagate the error and return the gradient of the weight matrices
-        # output_data = column array
-        node_errors = self.node_states.copy()
+        return self.node_states[-1]
 
-        y = output_data
-        y_hat = self.node_states[-1] # shape (\kappa, )
-        y_hat = y_hat[:, np.newaxis]
-        node_errors[-1] = delta_loss_function(y=y, y_hat=y_hat, type=self.loss_function)
-        W_grad = self.weight_matrices.copy()
+    def backPropagate(self, targets):
+        """
+        Backpropagate errors from the output to the input layer
+        Return gradients for the weight matrices
+        """
 
-        for i in range(self.n_layers -1, -1, -1):
-            # First weight the errors of nodes in layer above by the derivative of activation
-            wtd_errors = node_errors[i+1].copy()
-            z = self.node_states[i][:,np.newaxis]
-            W = self.weight_matrices[i]
-            layer_size_above = self.list_layer_sizes[i+1]
-            delta_activation_weights = [delta_activation(z.T @ W[:,q], type=self.activation_list[i]) for q in np.arange(layer_size_above)]
-            delta_activation_weights = np.asarray(delta_activation_weights)
-            if len(delta_activation_weights.shape)==1:
-                delta_activation_weights = delta_activation_weights[:,np.newaxis]
-            if len(wtd_errors.shape)==1:
-                wtd_errors = wtd_errors[:,np.newaxis]
+        error_list = self.node_states.copy()
+        # error at the output layer to be backpropagated
+        error = -(np.asarray(targets) - np.asarray(self.node_states[-1]))
+        for L in range(self.n_layers, 0, -1): # layer index to be backpropagated
+            # print('L', L)
+            if L < self.n_layers: # Not backpropagating from the output layer
+                error = self.weight_matrices[L] @ error_list[L+1].reshape(-1,1)
+                error = error[:,0]
+            error_list[L] = delta_activation(self.node_states[L], type=self.activation_list[L]) * error
 
-            wtd_errors = wtd_errors * delta_activation_weights
-            # wtd_errors = wtd_errors[:, np.newaxis]
+        # Compute the gradients
+        grad_list = self.weight_matrices.copy()
+        for i in np.arange(self.n_layers):
+            grad_list[i] = self.node_states[i].reshape(-1,1) @ error_list[i+1].reshape(1,-1)
 
-            # Compute the gradient of the i th weight matrix (conneting layer i and i+1)
-            W_grad[i] = wtd_errors @ z.T
+        return grad_list
 
-            # Propagate it backward onto layer i
-            node_errors[i] = (W @ wtd_errors)[:,0]
-        return W_grad
 
-    def minibatch_grad(self, minibatch_idx):
+    def train(self, iterations=100, learning_rate=0.5, momentum=0.5, rate_decay=0.01, verbose=True):
+        # N: learning rate
+        self.learning_rate = learning_rate
+        self.momentum = momentum
+        self.rate_decay = rate_decay
+        error = 10
+        i=0
+        while (i<iterations) and (error>0.001):
+            error = 0.0
+            random.shuffle(self.training_data)
+            for p in self.training_data:
+                inputs = p[0]
+                targets = p[1]
+                self.forwardPropagate(inputs)
+                grad_list = self.backPropagate(targets)
 
-        W_grad_list = []
-        Y = self.training_set[1] # true labels: each column = one-hot encoding
-        X = self.training_set[0]
-        for i in minibatch_idx:
-            self.forward_propagate(input_data=X[:,i])
-            y = Y[:, i]
-            y = y[:, np.newaxis]
-            W_grad = self.backpropagate(output_data=y)
-            W_grad_list.append(W_grad)
+                for L in np.arange(self.n_layers):
+                    # update the L th weight matrix connecting L th and (L+1)st layers
+                    grad = grad_list[L]
+                    prev_grad = self.prev_grad_list[L]
+                    self.weight_matrices[L] -= self.learning_rate * grad + self.momentum * prev_grad
+                    self.prev_grad_list[L] = grad # store current gradient
 
-        W_grad_minibatch = self.weight_matrices.copy()
-        for j in np.arange(self.n_layers):
-            grad_temp = [W_grad_list[i][j] for i in np.arange(len(minibatch_idx))]
-            W_grad_minibatch[j] = np.sum(np.asarray(grad_temp), axis=0)
+                error += (0.5) * np.linalg.norm(np.asarray(targets) - self.node_states[-1])**2
 
-        return W_grad_minibatch
+            with open('error.txt', 'a') as errorfile:
+                errorfile.write(str(error) + '\n')
+                errorfile.close()
 
-    def train(self, n_SGD_iter=10, minibatch_size=1, stopping_diff=0.01):
-        Y = self.training_set[1]
-        for i in np.arange(n_SGD_iter):
-            # compute the minibatch gradients of weight matrices
-            num_train_data = Y.shape[0]
-            minibatch_idx = np.random.choice(np.arange(num_train_data), minibatch_size)
-            W_grad_minibatch = self.minibatch_grad(minibatch_idx=minibatch_idx)
+            if (i % 5 == 0) and verbose:
+                print('iteration %i, error %-.5f' % (i, error))
+            # learning rate decay
+            self.learning_rate = 1/(np.log(i+2) * (i+50)**(0.5))
+            # self.learning_rate = self.learning_rate * (self.learning_rate / (self.learning_rate + (self.learning_rate * self.rate_decay)))
 
-            # GD
-            for j in np.arange(self.n_layers):
-                W1 = self.weight_matrices[j]
-                t = 0
-                grad = W_grad_minibatch[j].T
-                if (np.linalg.norm(grad) > stopping_diff):
-                    W1 = W1 - (np.log(i+1) / (((i + 1) ** (0.5)))) * grad
-                self.weight_matrices[j] = W1.copy()
-                if j == 0:
-                    print('SGD epoch = %i, grad_norm = %f' %(i, np.linalg.norm(grad)))
+            i += 1
 
-    def predict(self, test_set, normalize=False):
-        y_pred = []
-        for i in np.arange(test_set.shape[1]):
-            self.forward_propagate(input_data=test_set[:,i])
-            y_hat = self.node_states[-1].copy()
-            if normalize:
-                y_hat /= np.sum(y_hat)
-            y_pred.append(y_hat)
-            # print('!! y_hat', y_hat)
-        return y_pred
+
+    def predict(self, X, normalize = False):
+        X = np.asarray(X).T
+        x = np.vstack((np.asarray(X), np.ones(X.shape[1]))) # add 1 for hidden units in the input layer
+        print('X.shape', X.shape)
+
+        for i in np.arange(self.n_layers):
+            x = x.T @ self.weight_matrices[i]
+            x = activation(x.T, type=self.activation_list[i+1])
+
+        print('y_hat.shape', x.shape)
+        return x
+
+### Helper functions
+
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+# derivative of sigmoid
+def dsigmoid(y):
+    return y * (1.0 - y)
+
+# using tanh over logistic sigmoid is recommended
+
+def tanh(x):
+    return (1-np.exp(-2*x))/(1+np.exp(-2*x))
+    # return np.tanh(x)
+
+# derivative for tanh sigmoid
+def dtanh(y):
+    return 1 - y*y
 
 
 ### Helper functions
@@ -149,9 +170,11 @@ def loss_function(y, y_hat, type='cross-entropy'):
     y = column array of one-hot encoding of true class label
     """
     if type == 'cross_entropy':
-        return cross-entropy(y=y, y_hat=y_hat)
+        return cross_entropy(y=y, y_hat=y_hat)
     elif type == 'square':
         return (1/2) * (y_hat - y).T @ (y_hat - y)
+    elif type == 'softmax-cross-entropy':
+        return cross_entropy(y=y, y_hat=softmax(y_hat))
 
 
 def delta_loss_function(y, y_hat, type='cross-entropy'):
@@ -175,16 +198,20 @@ def activation(x, type='sigmoid'):
     elif type == 'ReLU':
         return np.maximum(0,x)
     elif type == 'tanh':
-        return (np.exp(2*x)-1)/(np.exp(2*x)+1)
+        return tanh(x)
+    elif type == 'identity':
+        return x
 
-def delta_activation(x, type='sigmoid'):
+def delta_activation(y, type='sigmoid'):
     # derivate of activation function
     if type == 'sigmoid':
-        return sigmoid(x)*(1-sigmoid(x))
+        return y*(1-y)
     elif type == 'ReLU':
-        return int((x>0))
+        return int((y>0))
     elif type == 'tanh':
-        return (2/(np.exp(x)+np.exp(-x)))**2
+        return 1-y**2
+    elif type == 'identity':
+        return 1
 
 def sigmoid(x):
     return 1/(1+np.exp(-x))
@@ -192,10 +219,8 @@ def sigmoid(x):
 def ReLU(x):
     return np.maximum(0,x)
 
-def tanh(x):
-    return (np.exp(2*x)-1)/(np.exp(2*x)+1)
 
-def ssoftmax(x):
+def softmax(x):
     exps = np.exp(x - np.max(x))
     return exps / np.sum(exps)
 
@@ -204,8 +229,7 @@ def cross_entropy(y, y_hat):
     y_hat = column array of predictive PMF
     y = column array of one-hot encoding of true class label
     """
-    z = (y.T @ np.log(y_hat))[0][0]
-    return (y.T @ np.log(y_hat))[0][0]
+    return -(y.T @ np.log(y_hat))[0][0]
 
 def delta_cross_entropy(y, y_hat):
     """
@@ -218,43 +242,3 @@ def delta_cross_entropy(y, y_hat):
         a = y.argmax(axis=0)[0]
         z[i,0] = -1/y_hat[a, 0]
     return z
-
-def list2onehot(y, list_classes):
-    """
-    y = list of class lables of length n
-    output = n x k array, i th row = one-hot encoding of y[i] (e.g., [0,0,1,0,0])
-    """
-    Y = np.zeros(shape = [len(y), len(list_classes)], dtype=int)
-    for i in np.arange(Y.shape[0]):
-        for j in np.arange(len(list_classes)):
-            if y[i] == list_classes[j]:
-                Y[i,j] = 1
-    return Y
-
-def onehot2list(y, list_classes=None):
-    """
-    y = n x k array, i th row = one-hot encoding of y[i] (e.g., [0,0,1,0,0])
-    output =  list of class lables of length n
-    """
-    if list_classes is None:
-        list_classes = np.arange(y.shape[1])
-
-    y_list = []
-    for i in np.arange(y.shape[0]):
-        idx = np.where(y[i,:]==1)
-        idx = idx[0][0]
-        y_list.append(list_classes[idx])
-    return y_list
-
-def softmax(a):
-    """
-    given an array a = [a_1, .. a_k], compute the softmax distribution p = [p_1, .. , p_k] where p_i \propto exp(a_i)
-    """
-    a1 = a - np.max(a)
-    p = np.exp(a1)
-    if type(a) is list:
-        p = p/np.sum(p)
-    else:
-        row_sum = np.sum(p, axis=1)
-        p = p/row_sum[:, np.newaxis]
-    return p
