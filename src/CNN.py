@@ -21,7 +21,7 @@ class CNN(object):
     """
     Input data type: training_data = [pattern1, pattern2, ..., pattern n]
     pattern i = [np.array (input), np.array (output in one-hot encoding)]
-    Input --> Conv1 + ReLU --> Conv2 + ReLU + MaxPool --> Dense1 + ReLU --> Dense2 + Softmax --> predictive PMF
+    Input --> Conv1 + ReLU + MaxPool --> Conv2 + ReLU + MaxPool --> Dense1 + ReLU --> Dense2 + Softmax --> predictive PMF
     """
     def __init__(self,
                  training_data,
@@ -61,7 +61,15 @@ class CNN(object):
         b3 = np.zeros((w3.shape[0],1))
         b4 = np.zeros((w4.shape[0],1))
 
-        self.params = [f1, f2, w3, w4, b1, b2, b3, b4]
+        self.params = {}
+        self.params.update({'f1': f1})
+        self.params.update({'f2': f2})
+        self.params.update({'w3': w3})
+        self.params.update({'w4': w4})
+        self.params.update({'b1': b1})
+        self.params.update({'b2': b2})
+        self.params.update({'b3': b3})
+        self.params.update({'b4': b4})
 
     def compute_conv_dim(self):
         h_dim = self.img_x_dim
@@ -70,6 +78,10 @@ class CNN(object):
         # conv1
         h_dim = int((h_dim - self.f)/self.conv_stride)+1
         w_dim = int((w_dim - self.f)/self.conv_stride)+1
+
+        # maxpool
+        h_dim = int((h_dim - self.f_pool)/self.pool_stride)+1
+        w_dim = int((w_dim - self.f_pool)/self.pool_stride)+1
 
         # conv 2
         h_dim = int((h_dim - self.f)/self.conv_stride)+1
@@ -88,29 +100,33 @@ class CNN(object):
         return np.random.standard_normal(size=size) * 0.01
 
     def conv(self, image, label):
-        """
-        ForwardPropragate + BackPropagate + Compute Gradients
-        """
+
+        # ForwardPropragate + BackPropagate + Compute Gradients
+
         conv_s, pool_f, pool_s = self.conv_stride, self.f_pool, self.pool_stride
-        [f1, f2, w3, w4, b1, b2, b3, b4] = self.params
+
+        f1 = self.params.get('f1')
+        f2 = self.params.get('f2')
+        w3 = self.params.get('w3')
+        w4 = self.params.get('w4')
+        b1 = self.params.get('b1')
+        b2 = self.params.get('b2')
+        b3 = self.params.get('b3')
+        b4 = self.params.get('b4')
 
         ################################################
         ############## Forward Operation ###############
         ################################################
         conv1 = self.convolution(image, f1, b1, conv_s) # convolution operation
-        # print('conv1.shape', conv1.shape)
         conv1[conv1<=0] = 0 # pass through ReLU non-linearity
+        pooled1 = self.maxpool(conv1, pool_f, pool_s) # maxpooling operation
 
-        conv2 = self.convolution(conv1, f2, b2, conv_s) # second convolution operation
+        conv2 = self.convolution(pooled1, f2, b2, conv_s) # second convolution operation
         conv2[conv2<=0] = 0 # pass through ReLU non-linearity
-        # print('conv2.shape', conv2.shape)
+        pooled2 = self.maxpool(conv2, pool_f, pool_s) # maxpooling operation
 
-
-        pooled = self.maxpool(conv2, pool_f, pool_s) # maxpooling operation
-        # print('pooled.shape', pooled.shape)
-
-        (nf2, dim2, _) = pooled.shape
-        fc = pooled.reshape((nf2 * dim2 * dim2, 1)) # flatten pooled layer
+        (nf2, dim2, _) = pooled2.shape
+        fc = pooled2.reshape((nf2 * dim2 * dim2, 1)) # flatten pooled layer
         # print('fc.shape', fc.shape)
 
         z = w3.dot(fc) + b3 # first dense layer
@@ -138,7 +154,6 @@ class CNN(object):
 
         dout = probs - label # derivative of loss w.r.t. final dense layer output
 
-
         dw4 = dout.dot(z.T) # loss gradient of final dense layer weights
         db4 = np.sum(dout, axis = 1).reshape(b4.shape) # loss gradient of final dense layer biases
 
@@ -148,19 +163,21 @@ class CNN(object):
         db3 = np.sum(dz, axis = 1).reshape(b3.shape)
 
         dfc = w3.T.dot(dz) # loss gradients of fully-connected layer (pooling layer)
-        dpool = dfc.reshape(pooled.shape) # reshape fully connected into dimensions of pooling layer
+        dpool2 = dfc.reshape(pooled2.shape) # reshape fully connected into dimensions of pooling layer
 
-        dconv2 = self.maxpoolBackward(dpool, conv2, pool_f, pool_s) # backprop through the max-pooling layer(only neurons with highest activation in window get updated)
+        dconv2 = self.maxpoolBackward(dpool2, conv2, pool_f, pool_s) # backprop through the max-pooling layer(only neurons with highest activation in window get updated)
         dconv2[conv2<=0] = 0 # backpropagate through ReLU
+        dpool1, df2, db2 = self.convolutionBackward(dconv2, pooled1, f2, conv_s) # backpropagate previous gradient through second convolutional layer.
 
-        dconv1, df2, db2 = self.convolutionBackward(dconv2, conv1, f2, conv_s) # backpropagate previous gradient through second convolutional layer.
+        dconv1 = self.maxpoolBackward(dpool1, conv1, pool_f, pool_s) # backprop through the max-pooling layer(only neurons with highest activation in window get updated)
         dconv1[conv1<=0] = 0 # backpropagate through ReLU
-
         dimage, df1, db1 = self.convolutionBackward(dconv1, image, f1, conv_s) # backpropagate previous gradient through first convolutional layer.
 
         grads = [df1, df2, dw3, dw4, db1, db2, db3, db4]
 
         return grads, loss
+
+
 
     #####################################################
     ################### Optimization ####################
@@ -172,11 +189,16 @@ class CNN(object):
         batch = [pattern1, pattern2, .. pattern n']
         pattern i = [np.array (input img), np.array (output)]
         '''
-        [f1, f2, w3, w4, b1, b2, b3, b4] = self.params
-        X = minibatch[0]
-        Y = minibatch[1]
-        batch_size = len(X)
+        f1 = self.params.get('f1')
+        f2 = self.params.get('f2')
+        w3 = self.params.get('w3')
+        w4 = self.params.get('w4')
+        b1 = self.params.get('b1')
+        b2 = self.params.get('b2')
+        b3 = self.params.get('b3')
+        b4 = self.params.get('b4')
 
+        batch_size = len(minibatch)
 
         cost_ = 0
 
@@ -209,9 +231,9 @@ class CNN(object):
         bs3 = np.zeros(b3.shape)
         bs4 = np.zeros(b4.shape)
 
-        for i in np.arange(len(X)):
-            x = X[i].reshape(self.img_depth, self.img_x_dim, self.img_y_dim)
-            y = Y[i].reshape(-1,1)
+        for i in np.arange(len(minibatch)):
+            x = minibatch[i][0].reshape(self.img_depth, self.img_x_dim, self.img_y_dim)
+            y = minibatch[i][1].reshape(-1,1)
 
             # Collect Gradients for training example
             # stride for conv = 1
@@ -268,7 +290,15 @@ class CNN(object):
         cost_ = cost_/batch_size
         cost.append(cost_)
 
-        params = [f1, f2, w3, w4, b1, b2, b3, b4]
+        params = {}
+        params.update({'f1': f1})
+        params.update({'f2': f2})
+        params.update({'w3': w3})
+        params.update({'w4': w4})
+        params.update({'b1': b1})
+        params.update({'b2': b2})
+        params.update({'b3': b3})
+        params.update({'b4': b4})
 
         return params, cost
 
@@ -294,30 +324,31 @@ class CNN(object):
 
         for epoch in trange(num_epochs):
 
-            np.random.shuffle(self.training_data)
-
             # sample a minibatch:
-            X = []
-            Y = []
-            idx = np.random.choice(np.arange(len(self.training_data)), minibatch_size)
-            for i in np.arange(minibatch_size):
-                pattern = self.training_data[idx[i]]
-                X.append(pattern[0])
-                Y.append(pattern[1])
+            #X = []
+            #Y = []
+            # idx = np.random.choice(np.arange(len(self.training_data)), minibatch_size)
+            #pattern = self.training_data[idx[i]]
+            #X.append(pattern[0])
+            #Y.append(pattern[1])
 
+            np.random.shuffle(self.training_data)
+            batches = [self.training_data[k:k + minibatch_size] for k in range(0, len(self.training_data), minibatch_size)]
+            for i in np.arange(len(batches)):
+                params, cost = self.adamGD(minibatch=batches[i],
+                                           lr=lr, # learning rate
+                                           beta1=beta1,
+                                           beta2=beta2,
+                                           cost=cost)
+                # t.set_description("Cost: %.2f" % (cost[-1]))
             # update parameters
-            params, cost = self.adamGD(minibatch=[X,Y],
-                                       lr=lr, # learning rate
-                                       beta1=beta1,
-                                       beta2=beta2,
-                                       cost=cost)
 
             self.params = params
             if (epoch % 5 == 0) and verbose:
-                print('iteration %i, error %-.5f' % (epoch, cost[-1]))
+                print('epoch %i, error %-.5f' % (epoch, cost[-1]))
 
-            if cost[-1] < 0.01:
-                break
+            #if cost[-1] < 0.01:
+            #    break
 
         to_save = [params, cost]
 
@@ -456,7 +487,14 @@ class CNN(object):
         Make predictions with trained filters/weights.
         '''
         conv_s, pool_f, pool_s = self.conv_stride, self.f_pool, self.pool_stride
-        [f1, f2, w3, w4, b1, b2, b3, b4] = self.params
+        f1 = self.params.get('f1')
+        f2 = self.params.get('f2')
+        w3 = self.params.get('w3')
+        w4 = self.params.get('w4')
+        b1 = self.params.get('b1')
+        b2 = self.params.get('b2')
+        b3 = self.params.get('b3')
+        b4 = self.params.get('b4')
 
         list_probs = []
 
@@ -464,12 +502,13 @@ class CNN(object):
             image = image_list[i]
             conv1 = self.convolution(image, f1, b1, conv_s) # convolution operation
             conv1[conv1<=0] = 0 #relu activation
+            pooled1 = self.maxpool(conv1, pool_f, pool_s) # maxpooling operation
 
-            conv2 = self.convolution(conv1, f2, b2, conv_s) # second convolution operation
+            conv2 = self.convolution(pooled1, f2, b2, conv_s) # second convolution operation
             conv2[conv2<=0] = 0 # pass through ReLU non-linearity
-
             pooled = self.maxpool(conv2, pool_f, pool_s) # maxpooling operation
             (nf2, dim2, _) = pooled.shape
+
             fc = pooled.reshape((nf2 * dim2 * dim2, 1)) # flatten pooled layer
 
             z = w3.dot(fc) + b3 # first dense layer

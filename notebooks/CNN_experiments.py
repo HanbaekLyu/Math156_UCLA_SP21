@@ -99,7 +99,7 @@ def main():
 
 
 
-            idx = np.random.choice(np.arange(len(y_test)), X_train.shape[0])
+            idx = np.random.choice(np.arange(len(y_test)), 3000)
             X_test0 = X_test[idx, :]/np.max(X_test)
             y_test0 = y_test[idx, :]
 
@@ -133,7 +133,7 @@ def main():
                        beta1 = 0.95,
                        beta2 = 0.99,
                        minibatch_size = 32,
-                       num_epochs = 50,
+                       num_epochs = 500,
                        verbose = True)
 
             # FFNN prediction
